@@ -102,10 +102,10 @@ class bllcData():
         time.sleep(1)
         index = 0
         update_tasks = []
-        for device in self.devices:
-            update_tasks.append(device.async_update_ha_state())
-        if update_tasks:
-            await asyncio.wait(update_tasks, loop=self._hass.loop)
+        #for device in self.devices:
+        #    update_tasks.append(device.async_update_ha_state())
+        #if update_tasks:
+        #    await asyncio.wait(update_tasks, loop=self._hass.loop)
 
 
     async def update_data(self):
@@ -138,9 +138,8 @@ class bllcData():
             device_id = self.devs[index][ATTR_ID]
             json = await self.request(CTRL_URL.replace('{did}',device_id), postdata)
             _LOGGER.debug("Control device: prop=%s, json=%s", prop, json)
+            await self.async_update()
             if json is not None:
-                
-                await self.async_update()
                 return True
             return False
         except BaseException:
@@ -201,7 +200,7 @@ class bllcFan(FanEntity):
     @property
     def speed_list(self) -> list:
         """Get the list of available speeds."""
-        speeds = [SPEED_LOW,SPEED_MEDIUM,SPEED_HIGH]
+        speeds = [SPEED_LOW,SPEED_MEDIUM,SPEED_HIGH,SPEED_OFF]
         return speeds
         
     @property
@@ -257,12 +256,23 @@ class bllcFan(FanEntity):
         speed: str = None):
         if speed == SPEED_HIGH:
             await self.set_value('Mode','1')
+            self._data.devs[self._index]['is_on'] = 1
+            self._data.devs[self._index][ATTR_PRESET_MODE] = 1
+
         if speed == SPEED_LOW:
             await self.set_value('Mode','3')
+            self._data.devs[self._index]['is_on'] = 1
+            self._data.devs[self._index][ATTR_PRESET_MODE] = 3
+
         if speed == SPEED_MEDIUM:
             await self.set_value('Mode','2')
+            self._data.devs[self._index]['is_on'] = 1
+            self._data.devs[self._index][ATTR_PRESET_MODE] = 2
         if speed == SPEED_OFF:
             await self.set_value('Mode','5')
+            self._data.devs[self._index]['is_on'] = 0
+            self._data.devs[self._index][ATTR_PRESET_MODE] = 5
+
         
         
         
@@ -276,7 +286,8 @@ class bllcFan(FanEntity):
             result = await self.async_set_speed(speed)
         else:
             result = await self.set_value('Mode','2')
-        self._data.devs[self._index]['is_on'] = 1
+            self._data.devs[self._index]['is_on'] = 1
+            self._data.devs[self._index][ATTR_PRESET_MODE] = 2
             
     @property
     def is_on(self):
@@ -287,6 +298,7 @@ class bllcFan(FanEntity):
         """Turn the device off."""
         result = await self.set_value('Mode','5')
         self._data.devs[self._index]['is_on'] = 0
+        self._data.devs[self._index][ATTR_PRESET_MODE] = 5
 
     def get_value(self, prop):
         """Get property value"""
