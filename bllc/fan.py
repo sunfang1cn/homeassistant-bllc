@@ -15,13 +15,9 @@ import voluptuous as vol
 
 from homeassistant.components.fan import (
     PLATFORM_SCHEMA,
-    SPEED_HIGH,
-    SPEED_LOW,
-    SPEED_MEDIUM,
-    SPEED_OFF,
-    SUPPORT_SET_SPEED,
-    FanEntity,
+    FanEntity
 )
+from homeassistant.components.fan import FanEntityFeature
 from homeassistant.config_entries import SOURCE_IMPORT
 from homeassistant.const import (
     ATTR_ID,
@@ -32,13 +28,14 @@ from homeassistant.const import (
     CONF_NAME,CONF_SCAN_INTERVAL,
     CONF_TOKEN,
 )
-from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.event import track_time_interval
 import homeassistant.helpers.config_validation as cv
-from homeassistant.components.climate.const import (SUPPORT_TARGET_TEMPERATURE,
-                                                    SUPPORT_PRESET_MODE, ATTR_HVAC_MODE, HVAC_MODE_HEAT, HVAC_MODE_OFF,
-                                                    CURRENT_HVAC_HEAT, CURRENT_HVAC_OFF, ATTR_CURRENT_TEMPERATURE,
-                                                    ATTR_PRESET_MODE, PRESET_HOME, PRESET_AWAY)
-
+from homeassistant.components.climate.const import (ATTR_CURRENT_TEMPERATURE,
+                                                    ATTR_PRESET_MODE)
+SPEED_HIGH = 100
+SPEED_LOW = 33
+SPEED_MEDIUM = 66
+SPEED_OFF = 0
 
 _LOGGER = logging.getLogger(__name__)
 ATTR_HUMIDITY = "humidity"
@@ -61,7 +58,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
 })
 
 
-async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
+def setup_platform(hass, config, add_entities, discovery_info=None):
     """Set up the bllc fan devices."""
     applicationId = config.get('applicationId')
     deviceId = config.get('deviceId')
@@ -69,7 +66,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     scan_interval = config.get(CONF_SCAN_INTERVAL)
 
     bllc = bllcData(hass, applicationId, deviceId,userToken)
-    await bllc.update_data()
+    bllc.update_data()
     if not bllc.devs:
         _LOGGER.error("No bllc devices detected.")
         return None
@@ -77,10 +74,10 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     devices = []
     for index in range(len(bllc.devs)):
         devices.append(bllcFan(bllc, index))
-    async_add_entities(devices)
+    add_entities(devices)
 
     bllc.devices = devices
-    async_track_time_interval(hass, bllc.async_update, scan_interval)
+    track_time_interval(hass, bllc.update, scan_interval)
 
 
 class bllcData():
@@ -96,22 +93,21 @@ class bllcData():
 
 
 
-    async def async_update(self,time2=None):
+    def update(self,time2=None):
         """Update online data and update ha state."""
-        await self.update_data()
+        self.update_data()
         time.sleep(1)
         index = 0
         update_tasks = []
-        #for device in self.devices:
-        #    update_tasks.append(device.async_update_ha_state())
-        #if update_tasks:
-        #    await asyncio.wait(update_tasks, loop=self._hass.loop)
+        for device in self.devices:
+          device.schedule_update_ha_state()
 
 
-    async def update_data(self):
+
+    def update_data(self):
         """Update online data."""
         try:
-            _json = await self.request(LIST_URL.replace('{did}',self._deviceId))
+            _json = self.request(LIST_URL.replace('{did}',self._deviceId))
             if _json is None:
                 _LOGGER.error("failed to get bllc devices")
                 return
@@ -125,32 +121,31 @@ class bllcData():
                          ATTR_ID:_json['did']})
             self.devs = devs
             _LOGGER.info("List device: devs=%s", self.devs)
-        except BaseException:
+        except Exception:
             import traceback
             _LOGGER.error(traceback.format_exc())
 
-    async def control(self, index, prop, value):
+    def control(self, index, prop, value):
         """Control device via server."""
         try:
             postdata = {}
             postdata['attrs'] = {}
             postdata['attrs'][prop] = value
             device_id = self.devs[index][ATTR_ID]
-            json = await self.request(CTRL_URL.replace('{did}',device_id), postdata)
+            json = self.request(CTRL_URL.replace('{did}',device_id), postdata)
             _LOGGER.debug("Control device: prop=%s, json=%s", prop, json)
-            await self.async_update()
+            self.update()
             if json is not None:
                 return True
             return False
-        except BaseException:
+        except Exception:
             import traceback
             _LOGGER.error('Exception: %s', traceback.format_exc())
             return False
 
-    async def request(self, url,postdata=None):
+    def request(self, url,postdata=None):
         """Request from server."""
         headers = {    
-            'User-Agent':'Mozilla/5.0 (compatible; MSIE 5.5; Windows NT)',
             'Accept': 'application/json',
             'X-Gizwits-Application-Id': self._applicationId,
             'X-Gizwits-User-token': self._userToken
@@ -160,10 +155,18 @@ class bllcData():
             headers['Content-Type'] = 'application/json';
             _postdata = bytes(json.dumps(postdata),'utf8')
             req = request.Request(url=url,data=_postdata,headers=headers,method='POST')
-            
         else:
             req = request.Request(url=url,data=None,headers=headers,method='GET')
-        response = request.urlopen(req) 
+            
+        try:
+            response = request.urlopen(req,timeout=5)
+        except urllib.error.HTTPError as e:
+            print(f"HTTP Error: {e.code} - {e.reason}")
+        except urllib.error.URLError as e:
+            print(f"URL Error: {e.reason}")
+        except Exception as e:
+            print(f"An unexpected error occurred: {e}")
+            
         if response.status == 200:
             res = json.loads(response.read().decode('utf-8'))
             if type(res) is not dict:
@@ -224,7 +227,7 @@ class bllcFan(FanEntity):
     @property
     def supported_features(self):
         """Return the list of supported features."""
-        return SUPPORT_SET_SPEED
+        return FanEntityFeature.SET_SPEED | FanEntityFeature.TURN_ON | FanEntityFeature.TURN_OFF
 
     @property
     def temperature_unit(self):
@@ -252,51 +255,60 @@ class bllcFan(FanEntity):
 
 
 
-    async def async_set_speed(self,
+    def set_speed(self,
         speed: str = None):
         if speed == SPEED_HIGH:
-            await self.set_value('Mode','1')
+            self.set_value('Mode','1')
             self._data.devs[self._index]['is_on'] = 1
             self._data.devs[self._index][ATTR_PRESET_MODE] = 1
 
         if speed == SPEED_LOW:
-            await self.set_value('Mode','3')
+            self.set_value('Mode','3')
             self._data.devs[self._index]['is_on'] = 1
             self._data.devs[self._index][ATTR_PRESET_MODE] = 3
 
         if speed == SPEED_MEDIUM:
-            await self.set_value('Mode','2')
+            self.set_value('Mode','2')
             self._data.devs[self._index]['is_on'] = 1
             self._data.devs[self._index][ATTR_PRESET_MODE] = 2
         if speed == SPEED_OFF:
-            await self.set_value('Mode','5')
+            self.set_value('Mode','5')
             self._data.devs[self._index]['is_on'] = 0
             self._data.devs[self._index][ATTR_PRESET_MODE] = 5
 
         
-        
-        
+    def set_percentage(self, percentage: int) -> None:    
+        if percentage == 0:
+            self.set_speed(SPEED_OFF)
+        if percentage > 0 and percentage <= 33:
+            self.set_speed(SPEED_LOW)
+        if percentage > 33 and percentage <= 66:
+            self.set_speed(SPEED_MEDIUM)
+        if percentage > 66 and percentage <= 100:
+            self.set_speed(SPEED_HIGH)
 
-    async def async_turn_on(
+    def turn_on(
         self,
-        speed: str = None):
+        speed: str = None,
+        percentage = None,
+        preset_mode = None):
         """Turn the device on."""
         if speed:
             # If operation mode was set the device must not be turned on.
-            result = await self.async_set_speed(speed)
+            result = self.set_speed(speed)
         else:
-            result = await self.set_value('Mode','2')
+            result = self.set_value('Mode','1')
             self._data.devs[self._index]['is_on'] = 1
-            self._data.devs[self._index][ATTR_PRESET_MODE] = 2
+            self._data.devs[self._index][ATTR_PRESET_MODE] = 1
             
     @property
     def is_on(self):
         """Return true if device is on."""
         return self.get_value('is_on') == 1
 
-    async def async_turn_off(self) -> None:
+    def turn_off(self) -> None:
         """Turn the device off."""
-        result = await self.set_value('Mode','5')
+        result = self.set_value('Mode','5')
         self._data.devs[self._index]['is_on'] = 0
         self._data.devs[self._index][ATTR_PRESET_MODE] = 5
 
@@ -307,9 +319,8 @@ class bllcFan(FanEntity):
             return devs[self._index][prop]
         return None
 
-    async def set_value(self, prop, value):
+    def set_value(self, prop, value):
         """Set property value"""
-        if await self._data.control(self._index, prop, value):
-            return
+        self._data.control(self._index, prop, value)
 
 
