@@ -1,0 +1,10 @@
+{
+  "domain": "bllc",
+  "name": "bllc fresh air",
+  "documentation": "https://www.example.com",
+  "dependencies": [],
+  "codeowners": [],
+  "requirements": [],
+  "version": "1.0.0",
+  "iot_class": "cloud_polling"
+}
