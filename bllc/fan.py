@@ -6,7 +6,10 @@ only tested on bllc BE series
 import asyncio
 import logging
 import json
+import ssl
+import urllib
 from urllib import request,parse
+
 
 from datetime import timedelta
 
@@ -45,14 +48,28 @@ ATTR_SPEED_LIST = "speed_list"
 
 LIST_URL = "https://api.gizwits.com/app/devdata/{did}/latest"
 CTRL_URL = "https://api.gizwits.com/app/control/{did}"
+LOGIN_URL = "https://api.gizwits.com/app/login"
 
 DEFAULT_NAME = 'Bllc'
 ATTR_AVAILABLE = 'available'
 
+def _ssl_context():
+    """Return an SSL context compatible with Gizwits API.
+
+    HA containers often compile OpenSSL with SECLEVEL=2 which rejects the
+    cipher suites offered by api.gizwits.com.  Lowering to SECLEVEL=1
+    matches the behaviour of system curl and fixes the handshake failure.
+    """
+    ctx = ssl.create_default_context()
+    ctx.set_ciphers('DEFAULT@SECLEVEL=1')
+    return ctx
+
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Required('applicationId'): cv.string,
     vol.Required('deviceId'): cv.string,
-    vol.Required('userToken'): cv.string,
+    vol.Optional('userToken'): cv.string,
+    vol.Optional('username'): cv.string,
+    vol.Optional('password'): cv.string,
     vol.Optional(CONF_SCAN_INTERVAL, default=timedelta(seconds=30)): (
         vol.All(cv.time_period, cv.positive_timedelta)),
 })
@@ -65,7 +82,18 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
     userToken = config.get('userToken')
     scan_interval = config.get(CONF_SCAN_INTERVAL)
 
-    bllc = bllcData(hass, applicationId, deviceId,userToken)
+    if not userToken:
+        username = config.get('username')
+        password = config.get('password')
+        if not username or not password:
+            _LOGGER.error("Either userToken or both username and password must be provided.")
+            return None
+        userToken = bllcData.login(applicationId, username, password)
+        if not userToken:
+            _LOGGER.error("Failed to obtain userToken via username/password login.")
+            return None
+
+    bllc = bllcData(hass, applicationId, deviceId, userToken)
     bllc.update_data()
     if not bllc.devs:
         _LOGGER.error("No bllc devices detected.")
@@ -92,6 +120,33 @@ class bllcData():
         self.devs = None
 
 
+
+    @staticmethod
+    def login(applicationId, username, password):
+        """Login to Gizwits and return userToken, or None on failure."""
+        headers = {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'X-Gizwits-Application-Id': applicationId,
+        }
+        postdata = bytes(json.dumps({'username': username, 'password': password, 'lang': 'en'}), 'utf8')
+        req = request.Request(url=LOGIN_URL, data=postdata, headers=headers, method='POST')
+        try:
+            response = request.urlopen(req, timeout=15, context=_ssl_context())
+            if response.status == 200:
+                res = json.loads(response.read().decode('utf-8'))
+                token = res.get('token')
+                if token:
+                    _LOGGER.info("Gizwits login successful, token obtained.")
+                    return token
+                _LOGGER.error("Gizwits login response missing token: %s", res)
+        except urllib.error.HTTPError as e:
+            _LOGGER.error("Gizwits login HTTP error: %s - %s", e.code, e.reason)
+        except urllib.error.URLError as e:
+            _LOGGER.error("Gizwits login URL error: %s", e.reason)
+        except Exception as e:
+            _LOGGER.error("Gizwits login unexpected error: %s", e)
+        return None
 
     def update(self,time2=None):
         """Update online data and update ha state."""
@@ -145,6 +200,7 @@ class bllcData():
 
     def request(self, url,postdata=None):
         """Request from server."""
+        response = {}
         headers = {    
             'Accept': 'application/json',
             'X-Gizwits-Application-Id': self._applicationId,
@@ -159,13 +215,18 @@ class bllcData():
             req = request.Request(url=url,data=None,headers=headers,method='GET')
             
         try:
-            response = request.urlopen(req,timeout=5)
+            #_LOGGER.error(url)
+            #_LOGGER.error(headers)
+            response = request.urlopen(req, timeout=15, context=_ssl_context())
         except urllib.error.HTTPError as e:
-            print(f"HTTP Error: {e.code} - {e.reason}")
+            _LOGGER.error(f"HTTP Error: {e.code} - {e.reason}")
+            response.status = 400
         except urllib.error.URLError as e:
-            print(f"URL Error: {e.reason}")
+            _LOGGER.error(f"URL Error: {e.reason}")
+            response.status = 400
         except Exception as e:
-            print(f"An unexpected error occurred: {e}")
+            _LOGGER.error(f"An unexpected error occurred: {e}")
+            response.status = 400
             
         if response.status == 200:
             res = json.loads(response.read().decode('utf-8'))
